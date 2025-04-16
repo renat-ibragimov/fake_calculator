@@ -2,103 +2,77 @@ import asyncio
 import random
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Set
 
-import redis.asyncio as redis
 import websockets
 from websockets.server import WebSocketServerProtocol
 
-# Redis connection from default URL
-r = redis.from_url("redis://redis:6379/0")
-
-# Set of connected websocket clients
+DATA_FILE = "data/counter_state.json"
+HISTORY_FILE = "data/history.csv"
+DEFAULT_COUNT = 1138314
 connected_clients: Set[WebSocketServerProtocol] = set()
 
+def load_state() -> dict:
+    try:
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {
+            "community_count": DEFAULT_COUNT,
+            "added_today": 0,
+            "target_today": random.randint(120, 160)
+        }
+
+def save_state(state: dict) -> None:
+    with open(DATA_FILE, "w") as f:
+        json.dump(state, f)
+
+    if not Path(HISTORY_FILE).exists():
+        with open(HISTORY_FILE, "w") as f:
+            f.write("date,count\n")
+            f.write(f"{datetime.now().date()},{state['community_count']}\n")
 
 async def register(websocket: WebSocketServerProtocol) -> None:
-    """
-    Register a new client connection and send the current count immediately.
-
-    :param websocket: The WebSocket connection object.
-    """
     connected_clients.add(websocket)
     print("🟢 Client connected", flush=True)
-    current = await get_current_count()
-    await websocket.send(json.dumps({"count": current}))
-
+    state = load_state()
+    await websocket.send(json.dumps({"count": state["community_count"]}))
 
 async def unregister(websocket: WebSocketServerProtocol) -> None:
-    """
-    Unregister a client connection when it is closed.
-
-    :param websocket: The WebSocket connection object.
-    """
     connected_clients.remove(websocket)
     print("🔴 Client disconnected", flush=True)
 
-
-async def get_current_count() -> int:
-    """
-    Retrieve the current community count from Redis.
-
-    :returns: The current count as an integer.
-    """
-    value = await r.get("community_count")
-    return int(value) if value else 1138314
-
-
 async def increase_counter() -> None:
-    """
-    Increment the counter by a random value if the daily target has not been reached,
-    and broadcast the updated count to all connected clients.
-    """
     print("🔁 Checking whether to increment counter...", flush=True)
+    state = load_state()
 
-    # Ensure community_count is initialized
-    default_start = 1138314
-    is_initialized = await r.exists("community_count")
-    if not is_initialized:
-        await r.set("community_count", default_start)
-        print(f"⚙️ Initialized community_count with default: {default_start}", flush=True)
-
-    added_today = int(await r.get("added_today") or 0)
-    target_today = int(await r.get("target_today") or random.randint(120, 160))
-    await r.set("target_today", target_today)
-
-    if added_today >= target_today:
+    if state["added_today"] >= state["target_today"]:
         print("✅ Daily limit reached, skipping increment.", flush=True)
         return
 
     increment = random.randint(3, 10)
-    if added_today + increment > target_today:
-        increment = target_today - added_today
+    if state["added_today"] + increment > state["target_today"]:
+        increment = state["target_today"] - state["added_today"]
 
-    new_count = await r.incrby("community_count", increment)
-    await r.incrby("added_today", increment)
-    print(f"[{datetime.now()}] ✅ Counter increased by {increment}. New count: {new_count}", flush=True)
+    state["community_count"] += increment
+    state["added_today"] += increment
+    save_state(state)
 
-    payload = json.dumps({"count": new_count})
+    print(f"[{datetime.now()}] ✅ Counter increased by {increment}. New count: {state['community_count']}", flush=True)
+
+    payload = json.dumps({"count": state["community_count"]})
     await asyncio.gather(*[client.send(payload) for client in connected_clients])
 
-
 async def update_loop() -> None:
-    """
-    Periodically call `increase_counter` at random intervals (30 to 90 minutes).
-    """
     print("🕒 Update loop started", flush=True)
     while True:
-        interval = random.randint(1800, 5400)
+        interval = random.randint(60, 300)
         print(f"⏳ Sleeping for {interval // 60} min...", flush=True)
         await asyncio.sleep(interval)
         await increase_counter()
 
-
 async def daily_reset() -> None:
-    """
-    Reset the daily increment tracking variables at midnight UTC
-    and save the current community count as a historical snapshot
-    in a Redis hash under the 'history' key.
-    """
     print("🗓 Daily reset loop started", flush=True)
     while True:
         now = datetime.now()
@@ -107,41 +81,28 @@ async def daily_reset() -> None:
         print(f"🛌 Sleeping until midnight UTC (in {int(delta // 3600)}h {int((delta % 3600) // 60)}m)", flush=True)
         await asyncio.sleep(delta)
 
-        current_count = await r.get("community_count")
-        if current_count is not None:
-            await r.hset("history", now.date().isoformat(), int(current_count))
+        state = load_state()
+        with open(HISTORY_FILE, "a") as f:
+            f.write(f"{now.date()},{state['community_count']}\n")
+        state["added_today"] = 0
+        state["target_today"] = random.randint(120, 160)
+        save_state(state)
 
-        await r.delete("added_today", "target_today")
-        print(f"♻️ Daily reset completed. Snapshot saved for {now.date().isoformat()} = {current_count}", flush=True)
-
+        print(f"♻️ Daily reset completed. Snapshot saved for {now.date()} = {state['community_count']}", flush=True)
 
 async def handler(websocket: WebSocketServerProtocol, _) -> None:
-    """
-    Handle lifecycle of a client WebSocket connection.
-
-    :param websocket: The WebSocket connection object.
-    :param _: The path argument (unused).
-    """
     await register(websocket)
     try:
         await websocket.wait_closed()
     finally:
         await unregister(websocket)
 
-
 async def main() -> None:
-    """
-    Start the WebSocket server and background tasks for updating and resetting.
-    """
     print("🚀 Starting WebSocket server...", flush=True)
     server = await websockets.serve(handler, "0.0.0.0", 8765)
     print("✅ WebSocket server started on ws://0.0.0.0:8765", flush=True)
-
-    # Optional: run daily_reset in background so it doesn't block
     asyncio.create_task(daily_reset())
-
     await asyncio.gather(update_loop(), server.wait_closed())
-
 
 if __name__ == "__main__":
     print("🐍 Script started", flush=True)
