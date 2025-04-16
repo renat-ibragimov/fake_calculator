@@ -44,7 +44,7 @@ async def get_current_count() -> int:
     :returns: The current count as an integer.
     """
     value = await r.get("community_count")
-    return int(value) if value else 5000
+    return int(value) if value else 1138314
 
 
 async def increase_counter() -> None:
