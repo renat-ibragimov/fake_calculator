@@ -53,6 +53,14 @@ async def increase_counter() -> None:
     and broadcast the updated count to all connected clients.
     """
     print("🔁 Checking whether to increment counter...", flush=True)
+
+    # Ensure community_count is initialized
+    default_start = 1138314
+    is_initialized = await r.exists("community_count")
+    if not is_initialized:
+        await r.set("community_count", default_start)
+        print(f"⚙️ Initialized community_count with default: {default_start}", flush=True)
+
     added_today = int(await r.get("added_today") or 0)
     target_today = int(await r.get("target_today") or random.randint(120, 160))
     await r.set("target_today", target_today)
