@@ -8,8 +8,9 @@ from typing import Set
 import websockets
 from websockets.server import WebSocketServerProtocol
 
-DATA_FILE = "data/counter_state.json"
-HISTORY_FILE = "data/history.csv"
+BASE_DIR = Path(__file__).resolve().parent
+DATA_FILE = BASE_DIR / "data/counter_state.json"
+HISTORY_FILE = BASE_DIR / "data/history.csv"
 DEFAULT_COUNT = 1138314
 connected_clients: Set[WebSocketServerProtocol] = set()
 
