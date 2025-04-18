@@ -68,7 +68,7 @@ async def increase_counter() -> None:
 async def update_loop() -> None:
     print("🕒 Update loop started", flush=True)
     while True:
-        interval = random.randint(60, 120)
+        interval = random.randint(1800, 5400)
         print(f"⏳ Sleeping for {interval // 60} min...", flush=True)
         await asyncio.sleep(interval)
         await increase_counter()
